@@ -43,6 +43,7 @@ from glance.common import property_utils
 from glance.common import utils
 from glance.common import wsgi
 from glance import notifier
+from glance.openstack.common import idempotent
 import glance.openstack.common.log as logging
 from glance.openstack.common import strutils
 import glance.registry.client.v1.api as registry
@@ -670,6 +671,8 @@ class Controller(controller.BaseController):
         values = validate_image_meta(req, values)
         return values
 
+    @idempotent.idempotent
+    @idempotent.helper(substance="meta", resolver="id")
     @utils.mutating
     def create(self, req, image_meta, image_data):
         """

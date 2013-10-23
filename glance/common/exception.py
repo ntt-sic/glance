@@ -144,6 +144,10 @@ class InvalidFilterRangeValue(Invalid):
     message = _("Unable to filter using the specified range.")
 
 
+class InvalidClientToken(Invalid):
+    message = _("That client token is already used same uri request.")
+
+
 class ReadonlyProperty(Forbidden):
     message = _("Attribute '%(property)s' is read-only.")
 
