@@ -42,10 +42,17 @@ class TestStore(base.IsolatedUnitTest):
         ChunkedFile.CHUNKSIZE = 10
         self.store = Store()
 
+        self.stubs.Set(self.store, '_find_best_datadir',
+                       self.fake_find_best_datadir)
+
     def tearDown(self):
         """Clear the test environment"""
         super(TestStore, self).tearDown()
         ChunkedFile.CHUNKSIZE = self.orig_chunksize
+
+    def fake_find_best_datadir(self, imagesize):
+        """Fakes best datadir to return expected datadirectory."""
+        return self.test_dir
 
     def test_get(self):
         """Test a "normal" retrieval of an image in chunks"""
@@ -83,6 +90,26 @@ class TestStore(base.IsolatedUnitTest):
         self.assertRaises(exception.NotFound,
                           self.store.get,
                           loc)
+
+    def fake_find_best_datadir(self, imagesize):
+        """Fakes best datadir to return expected datadirectory."""
+        return self.test_dir
+
+    def test_configure_add_no_filesystem_store_datadir_conf(self):
+        """
+        Test BadStoreConfiguration exception is raised if
+        filesystem_store_datadir param is missing in glance-api.conf.
+        """
+        self.store.filesystem_store_datadirs = None
+        self.assertRaises(exception.BadStoreConfiguration,
+                          self.store.configure_add)
+
+    def test_configure_add(self):
+        """Test configure runs properly without specifying priority"""
+        self.stubs.Set(self.store, '_get_filesystem_store_datadir_conf',
+                       self.fake_get_filesystem_store_datadir_conf)
+        self.store.configure_add()
+        self.assertFalse(self.store.multiple_datadirs)
 
     def test_add(self):
         """Test that we can add an image via the filesystem backend"""
@@ -263,6 +290,29 @@ class TestStore(base.IsolatedUnitTest):
                           self.store.add,
                           image_id, image_file, 0)
         self.assertFalse(os.path.exists(path))
+
+    def test_add_can_not_find_best_datadir(self):
+        """
+        Tests if StorageFull exception is raised on unsuccessful attempt
+        to find best datadir while adding an image.
+        """
+        self.stubs.UnsetAll()
+        image_id = uuidutils.generate_uuid()
+        file_size = 1024 * 5  # 5K
+        file_contents = "*" * file_size
+        path = os.path.join(self.test_dir, image_id)
+        image_file = StringIO.StringIO(file_contents)
+
+        def fake_get_capacity_info(datadir):
+            return 0
+
+        self.stubs.Set(self.store,
+                       '_get_capacity_info',
+                       fake_get_capacity_info)
+
+        self.assertRaises(exception.StorageFull,
+                          self.store.add,
+                          image_id, image_file, 100)
 
     def test_delete(self):
         """
