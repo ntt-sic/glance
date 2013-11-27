@@ -117,7 +117,7 @@ class Store(glance.store.base.Store):
     def get_schemes(self):
         return ('file', 'filesystem')
 
-    def _create_directories(self, directory_paths):
+    def _create_image_directories(self, directory_paths):
         """
         Create directories to write image files if
         it does not exist.
@@ -135,17 +135,14 @@ class Store(glance.store.base.Store):
                 except (IOError, OSError):
                     if os.path.exists(datadir):
                         # NOTE(markwash): If the path now exists, some other
-                        # process must have beat us in the race condition. But it
-                        # doesn't hurt, so we can safely ignore the error.
+                        # process must have beat us in the race condition.
+                        # But it doesn't hurt, so we can safely ignore
+                        # the error.
                         continue
                     reason = _("Unable to create datadir: %s") % datadir
                     LOG.error(reason)
                     raise exception.BadStoreConfiguration(
                         store_name="filesystem", reason=reason)
-
-    def _get_filesystem_store_datadir(self):
-        """Returns filesystem_store_datadir from glance-api.conf"""
-        return CONF.filesystem_store_datadir
 
     def configure_add(self):
         """
@@ -154,11 +151,11 @@ class Store(glance.store.base.Store):
         this method. If the store was not able to successfully configure
         itself, it should raise `exception.BadStoreConfiguration`
 
-        :raises BadStoreConfiguration if priority specified in conf
-                is not numeric.
+        BadStoreConfiguration is raised in following scenarios.
+        1. filesystem_store_datadir param is not present in glance-api.conf
+        2. priority specified along with image directories is not mumeric
         """
-        self.filesystem_store_datadir = self._get_filesystem_store_datadir()
-        if not self.filesystem_store_datadir:
+        if not CONF.filesystem_store_datadir:
             reason = (_("Could not find %s in configuration options.") %
                       'filesystem_store_datadir')
             LOG.error(reason)
@@ -166,14 +163,14 @@ class Store(glance.store.base.Store):
                                                   reason=reason)
 
         directory_paths = set()
-        if len(self.filesystem_store_datadir) == 1:
+        if len(CONF.filesystem_store_datadir) == 1:
             self.multiple_datadirs = False
-            self.datadir = self.filesystem_store_datadir
+            self.datadir = CONF.filesystem_store_datadir[0]
             directory_paths.add(self.datadir)
         else:
             self.multiple_datadirs = True
             self.priority_data_map = {}
-            for datadir in self.filesystem_store_datadir:
+            for datadir in CONF.filesystem_store_datadir:
                 priority = 0
                 parts = map(lambda x: x.strip(), datadir.split(":"))
                 datadir_path = parts[0]
@@ -189,10 +186,10 @@ class Store(glance.store.base.Store):
                 if datadir_path:
                     directory_paths.add(datadir_path)
                     self.priority_data_map.setdefault(int(priority),
-                                                    []).append(datadir_path)
+                        []).append(datadir_path)
 
         self.priority_list = sorted(self.priority_data_map, reverse=True)
-        self._create_directories(directory_paths)
+        self._create_image_directories(directory_paths)
 
     @staticmethod
     def _resolve_location(location):
@@ -288,13 +285,13 @@ class Store(glance.store.base.Store):
 
         #Calculate total space
         df = processutils.execute("stat", "-f", "-c", "'%S %b'",
-                                  mount_point)[0].strip("'\n")
+                                  mount_point)[0].strip("'\n'")
         block_size, blocks_total = map(int, df.split())
         total_size = block_size * blocks_total
 
         #Calculate total allocated space
         du = processutils.execute("du", "-sb", "--apparent-size",
-                                  mount_point)[0].strip("'\n")
+                                      mount_point)[0].strip("'\n'")
         total_allocated = int(du.split('\t')[0])
 
         return max(0, total_size - total_allocated)
@@ -313,7 +310,7 @@ class Store(glance.store.base.Store):
         best_datadir = None
         max_free_space = 0
         if not self.multiple_datadirs:
-            return self.datadir[0]
+            return self.datadir
 
         for priority in self.priority_list:
             for datadir in self.priority_data_map.get(priority):
