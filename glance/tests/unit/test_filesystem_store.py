@@ -25,20 +25,18 @@ import os
 import StringIO
 
 import fixtures
-from oslo.config import cfg
 import mox
-import stubout
+from oslo.config import cfg
 
 from glance.common import exception
+from glance.openstack.common import units
 from glance.openstack.common import uuidutils
-from glance.openstack.common import processutils
 from glance.store.filesystem import Store, ChunkedFile
 from glance.store.location import get_location_from_uri
 from glance.tests.unit import base
 
-
 CONF = cfg.CONF
-CONF.import_opt('filesystem_store_datadir', 'glance.store.filesystem')
+
 
 class TestStore(base.IsolatedUnitTest):
 
@@ -48,36 +46,44 @@ class TestStore(base.IsolatedUnitTest):
         self.orig_chunksize = ChunkedFile.CHUNKSIZE
         ChunkedFile.CHUNKSIZE = 10
         self.store = Store()
-        self.stubs = stubout.StubOutForTesting()
-        #self.stubs.Set(processutils, 'execute', self._fake_execute)
-        #self.stubs.Set(self.store, '_find_best_datadir',
-        #               self.fake_find_best_datadir)
 
     def tearDown(self):
         """Clear the test environment"""
-        CONF.filesystem_store_datadir = self.test_dir
         super(TestStore, self).tearDown()
         ChunkedFile.CHUNKSIZE = self.orig_chunksize
 
-    def _fake_execute(self, *cmd, **kwargs):
-        """Writen for _get_capacity_info will always return total_size."""
-        if cmd[0] == 'stat':
-            return ['8096 1020079']
-        else:
-            return ["0\t/test/fake/dir"]
+    def test_configure_add(self):
+        """
+        Tests miltiple filesystem specified by filesystem_store_datadir
+        are parsed correctly.
+        """
+        store_map = [self.useFixture(fixtures.TempDir()).path,
+                     self.useFixture(fixtures.TempDir()).path]
+        CONF.set_override('filesystem_store_datadir',
+                          [store_map[0] + ":100",
+                           store_map[1] + ":200"])
+        self.store.configure_add()
 
-    def fake_find_best_datadir(self, imagesize):
-        """Fakes best datadir to return expected datadirectory."""
-        return self.test_dir
+        expected_priority_map = {100: [store_map[0]], 200: [store_map[1]]}
+        expected_priority_list = [200, 100]
+        self.assertEqual(self.store.priority_data_map, expected_priority_map)
+        self.assertEquals(self.store.priority_list, expected_priority_list)
 
-    def fake_get_filesystem_store_datadir_conf(self):
-        return [self.test_dir]
+    def test_configure_add_invalid_priority(self):
+        """
+        Tests invalid priority specified by filesystem_store_datadir
+        param raises BadStoreConfiguration exception.
+        """
+        CONF.set_override('filesystem_store_datadir',
+                          [self.useFixture(fixtures.TempDir()).path + ":100",
+                           self.useFixture(fixtures.TempDir()).path +
+                           ":invalid"])
+        self.assertRaises(exception.BadStoreConfiguration,
+                          self.store.configure_add)
 
     def test_get(self):
         """Test a "normal" retrieval of an image in chunks"""
         # First add an image...
-        self.stubs.Set(self.store, '_find_best_datadir',
-                       self.fake_find_best_datadir)
         image_id = uuidutils.generate_uuid()
         file_contents = "chunk00000remainder"
         image_file = StringIO.StringIO(file_contents)
@@ -114,11 +120,9 @@ class TestStore(base.IsolatedUnitTest):
 
     def test_add(self):
         """Test that we can add an image via the filesystem backend"""
-        self.stubs.Set(self.store, '_find_best_datadir',
-                       self.fake_find_best_datadir)
         ChunkedFile.CHUNKSIZE = 1024
         expected_image_id = uuidutils.generate_uuid()
-        expected_file_size = 1024 * 5  # 5K
+        expected_file_size = 5 * units.Ki  # 5K
         expected_file_contents = "*" * expected_file_size
         expected_checksum = hashlib.md5(expected_file_contents).hexdigest()
         expected_location = "file://%s/%s" % (self.test_dir,
@@ -146,9 +150,73 @@ class TestStore(base.IsolatedUnitTest):
         self.assertEqual(expected_file_contents, new_image_contents)
         self.assertEqual(expected_file_size, new_image_file_size)
 
+    def test_add_with_multiple_dirs(self):
+        """Test adding multiple filesystem directories."""
+        store_map = [self.useFixture(fixtures.TempDir()).path,
+                     self.useFixture(fixtures.TempDir()).path]
+        CONF.set_override('filesystem_store_datadir',
+                          [store_map[0] + ":100",
+                           store_map[1] + ":200"])
+        self.store.configure_add()
+
+        """Test that we can add an image via the filesystem backend"""
+        ChunkedFile.CHUNKSIZE = 1024
+        expected_image_id = uuidutils.generate_uuid()
+        expected_file_size = 5 * units.Ki  # 5K
+        expected_file_contents = "*" * expected_file_size
+        expected_checksum = hashlib.md5(expected_file_contents).hexdigest()
+        expected_location = "file://%s/%s" % (store_map[1],
+                                              expected_image_id)
+        image_file = StringIO.StringIO(expected_file_contents)
+
+        location, size, checksum, _ = self.store.add(expected_image_id,
+                                                     image_file,
+                                                     expected_file_size)
+
+        self.assertEquals(expected_location, location)
+        self.assertEquals(expected_file_size, size)
+        self.assertEquals(expected_checksum, checksum)
+
+        loc = get_location_from_uri(expected_location)
+        (new_image_file, new_image_size) = self.store.get(loc)
+        new_image_contents = ""
+        new_image_file_size = 0
+
+        for chunk in new_image_file:
+            new_image_file_size += len(chunk)
+            new_image_contents += chunk
+
+        self.assertEquals(expected_file_contents, new_image_contents)
+        self.assertEquals(expected_file_size, new_image_file_size)
+
+    def test_add_with_multiple_dirs_storage_full(self):
+        """
+        Test StorageFull exception is raised if no filesystem directory
+        is found that can store an image.
+        """
+        store_map = [self.useFixture(fixtures.TempDir()).path,
+                     self.useFixture(fixtures.TempDir()).path]
+        CONF.set_override('filesystem_store_datadir',
+                          [store_map[0] + ":100",
+                           store_map[1] + ":200"])
+        self.store.configure_add()
+
+        def fake_get_capacity_info(mount_point):
+            return 0
+
+        self.stubs.Set(self.store, '_get_capacity_info',
+                       fake_get_capacity_info)
+        ChunkedFile.CHUNKSIZE = 1024
+        expected_image_id = uuidutils.generate_uuid()
+        expected_file_size = 5 * units.Ki  # 5K
+        expected_file_contents = "*" * expected_file_size
+        expected_checksum = hashlib.md5(expected_file_contents).hexdigest()
+        image_file = StringIO.StringIO(expected_file_contents)
+
+        self.assertRaises(exception.StorageFull, self.store.add,
+                          expected_image_id, image_file, expected_file_size)
+
     def test_add_check_metadata_success(self):
-        self.stubs.Set(self.store, '_find_best_datadir',
-                       self.fake_find_best_datadir)
         expected_image_id = uuidutils.generate_uuid()
         in_metadata = {'akey': u'some value', 'list': [u'1', u'2', u'3']}
         jsonfilename = os.path.join(self.test_dir,
@@ -168,8 +236,6 @@ class TestStore(base.IsolatedUnitTest):
         self.assertEqual(metadata, in_metadata)
 
     def test_add_check_metadata_bad_data(self):
-        self.stubs.Set(self.store, '_find_best_datadir',
-                       self.fake_find_best_datadir)
         expected_image_id = uuidutils.generate_uuid()
         in_metadata = {'akey': 10}  # only unicode is allowed
         jsonfilename = os.path.join(self.test_dir,
@@ -189,8 +255,6 @@ class TestStore(base.IsolatedUnitTest):
         self.assertEqual(metadata, {})
 
     def test_add_check_metadata_bad_nosuch_file(self):
-        self.stubs.Set(self.store, '_find_best_datadir',
-                       self.fake_find_best_datadir)
         expected_image_id = uuidutils.generate_uuid()
         jsonfilename = os.path.join(self.test_dir,
                                     "storage_metadata.%s" % expected_image_id)
@@ -211,11 +275,9 @@ class TestStore(base.IsolatedUnitTest):
         Tests that adding an image with an existing identifier
         raises an appropriate exception
         """
-        self.stubs.Set(self.store, '_find_best_datadir',
-                       self.fake_find_best_datadir)
         ChunkedFile.CHUNKSIZE = 1024
         image_id = uuidutils.generate_uuid()
-        file_size = 1024 * 5  # 5K
+        file_size = 5 * units.Ki  # 5K
         file_contents = "*" * file_size
         image_file = StringIO.StringIO(file_contents)
 
@@ -228,11 +290,9 @@ class TestStore(base.IsolatedUnitTest):
                           image_id, image_file, 0)
 
     def _do_test_add_write_failure(self, errno, exception):
-        self.stubs.Set(self.store, '_find_best_datadir',
-                       self.fake_find_best_datadir)
         ChunkedFile.CHUNKSIZE = 1024
         image_id = uuidutils.generate_uuid()
-        file_size = 1024 * 5  # 5K
+        file_size = 5 * units.Ki  # 5K
         file_contents = "*" * file_size
         path = os.path.join(self.test_dir, image_id)
         image_file = StringIO.StringIO(file_contents)
@@ -287,11 +347,9 @@ class TestStore(base.IsolatedUnitTest):
         Tests the partial image file is cleaned up after a read
         failure.
         """
-        self.stubs.Set(self.store, '_find_best_datadir',
-                       self.fake_find_best_datadir)
         ChunkedFile.CHUNKSIZE = 1024
         image_id = uuidutils.generate_uuid()
-        file_size = 1024 * 5  # 5K
+        file_size = 5 * units.Ki  # 5K
         file_contents = "*" * file_size
         path = os.path.join(self.test_dir, image_id)
         image_file = StringIO.StringIO(file_contents)
@@ -306,105 +364,13 @@ class TestStore(base.IsolatedUnitTest):
                           image_id, image_file, 0)
         self.assertFalse(os.path.exists(path))
 
-    def test_add_can_not_find_best_datadir(self):
-        """
-        Tests if StorageFull exception is raised on unsuccessful attempt
-        to find best datadir while adding an image.
-        """
-        #self.stubs.UnsetAll()
-        image_id = uuidutils.generate_uuid()
-        file_size = 1024 * 5  # 5K
-        file_contents = "*" * file_size
-        path = os.path.join(self.test_dir, image_id)
-        image_file = StringIO.StringIO(file_contents)
-
-        def fake_get_capacity_info(datadir):
-            return 0
-
-        self.stubs.Set(self.store,
-                       '_get_capacity_info',
-                       fake_get_capacity_info)
-
-        self.assertRaises(exception.StorageFull,
-                          self.store.add,
-                          image_id, image_file, 100)
-
-    def test_find_best_datadir_single_datadir(self):
-        """
-        Test if multiple_datadirs is false if only one datadir is specified
-        and same directory is returned.
-        """
-        fake_image_size = 100
-        CONF.filesystem_store_datadir = [self.test_dir]
-        self.store.configure_add()
-        self.assertEqual(self.test_dir,
-                         self.store._find_best_datadir(fake_image_size))
-
-    def test_find_best_datadir_StorageFull(self):
-        """
-        Test StorageFull exception is raised if all specified datadirs
-        cannot store the image.
-        """
-        fake_image_size = 100
-        priority_2_datadir1 = '%s:2' % self.useFixture(fixtures.TempDir()).path
-        priority_2_datadir2 = '%s:2' % self.useFixture(fixtures.TempDir()).path
-        priority_1_datadir = '%s:1' % self.useFixture(fixtures.TempDir()).path
-        priority_0_datadir = self.useFixture(fixtures.TempDir()).path
-        CONF.filesystem_store_datadir = [priority_2_datadir1,
-                                         priority_2_datadir2,
-                                         priority_1_datadir,
-                                         priority_0_datadir]
-        self.store.configure_add()
-
-        def fake_get_capacity_info(datadir):
-            return 0
-
-        self.stubs.Set(self.store, '_get_capacity_info',
-                       fake_get_capacity_info)
-
-        self.assertRaises(exception.StorageFull, self.store._find_best_datadir,
-                          fake_image_size)
-
-    def test_find_best_datadir(self):
-        """Test if datadir is returned for a very small image."""
-        fake_image_size = 1
-        priority_2_datadir1 = '%s:2' % self.useFixture(fixtures.TempDir()).path
-        priority_1_datadir = '%s:1' % self.useFixture(fixtures.TempDir()).path
-        CONF.filesystem_store_datadir = [priority_2_datadir1,
-                                         priority_1_datadir]
-        self.stubs.Set(processutils, 'execute', self._fake_execute)
-        self.store.configure_add()
-        expected_data_dir = priority_2_datadir1.split(':')[0]
-        self.assertEqual(expected_data_dir,
-                         self.store._find_best_datadir(fake_image_size))
-
-    def test_create_image_directories_OSError(self):
-        """Test if OSError is caught attempt to create a datadir fails."""
-        test_image_dirs = ['/tmp/test_dir1']
-
-        def _fake_makedirs(datadir):
-            raise OSError
-
-        self.stubs.Set(os, 'makedirs', _fake_makedirs)
-        self.assertRaises(exception.BadStoreConfiguration,
-                          self.store._create_image_directories,
-                          test_image_dirs)
-
-    def test_create_image_directories(self):
-        """Test if OSError is caught attempt to create a datadir fails."""
-        test_image_dirs = ['/tmp/test_dir']
-        self.store._create_image_directories(test_image_dirs)
-        self.assertTrue(os.path.exists(test_image_dirs[0]))
-
     def test_delete(self):
         """
         Test we can delete an existing image in the filesystem store
         """
         # First add an image
-        self.stubs.Set(self.store, '_find_best_datadir',
-                       self.fake_find_best_datadir)
         image_id = uuidutils.generate_uuid()
-        file_size = 1024 * 5  # 5K
+        file_size = 5 * units.Ki  # 5K
         file_contents = "*" * file_size
         image_file = StringIO.StringIO(file_contents)
 

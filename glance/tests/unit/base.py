@@ -68,7 +68,7 @@ class IsolatedUnitTest(StoreClearingUnitTest):
                     verbose=False,
                     debug=False,
                     default_store='filesystem',
-                    filesystem_store_datadir=os.path.join(self.test_dir),
+                    filesystem_store_datadir=[os.path.join(self.test_dir)],
                     policy_file=policy_file,
                     lock_path=os.path.join(self.test_dir))
         stubs.stub_out_registry_and_store_server(self.stubs,

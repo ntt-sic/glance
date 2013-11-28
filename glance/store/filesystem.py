@@ -150,10 +150,6 @@ class Store(glance.store.base.Store):
         Any store that needs special configuration should implement
         this method. If the store was not able to successfully configure
         itself, it should raise `exception.BadStoreConfiguration`
-
-        BadStoreConfiguration is raised in following scenarios.
-        1. filesystem_store_datadir param is not present in glance-api.conf
-        2. priority specified along with image directories is not mumeric
         """
         if not CONF.filesystem_store_datadir:
             reason = (_("Could not find %s in configuration options.") %
@@ -178,17 +174,19 @@ class Store(glance.store.base.Store):
                     priority = parts[1]
                     if not priority.isdigit():
                         msg = (_("Invalid priority value %s in %s "
-                                 "configuration"))
-                        LOG.warn(msg  % (priority, "filesystem"))
+                                 "configuration") % (priority, "filesystem"))
+                        LOG.warn(msg)
                         raise exception.BadStoreConfiguration(
-                            store_name="filesystem", reason=reason)
+                            store_name="filesystem", reason=msg)
 
                 if datadir_path:
                     directory_paths.add(datadir_path)
                     self.priority_data_map.setdefault(int(priority),
-                        []).append(datadir_path)
+                                                      []).append(datadir_path)
 
-        self.priority_list = sorted(self.priority_data_map, reverse=True)
+                self.priority_list = sorted(self.priority_data_map,
+                                            reverse=True)
+
         self._create_image_directories(directory_paths)
 
     @staticmethod
@@ -291,7 +289,7 @@ class Store(glance.store.base.Store):
 
         #Calculate total allocated space
         du = processutils.execute("du", "-sb", "--apparent-size",
-                                      mount_point)[0].strip("'\n'")
+                                  mount_point)[0].strip("'\n'")
         total_allocated = int(du.split('\t')[0])
 
         return max(0, total_size - total_allocated)
@@ -307,11 +305,11 @@ class Store(glance.store.base.Store):
         :raises exception.StorageFull if there is no datadir in
                 self.priority_data_map that can accomodate the image.
         """
-        best_datadir = None
-        max_free_space = 0
         if not self.multiple_datadirs:
             return self.datadir
 
+        best_datadir = None
+        max_free_space = 0
         for priority in self.priority_list:
             for datadir in self.priority_data_map.get(priority):
                 free_space = self._get_capacity_info(datadir)
@@ -319,15 +317,16 @@ class Store(glance.store.base.Store):
                     max_free_space = free_space
                     best_datadir = datadir
 
-            # If best datadir is found with maximum free space for a priority
-            # then break the loop, else continue to look up in the group
-            # with lower priority datadirs.
+            # If datadir is found which can accomodate image and has maximum
+            # free space for the given priority then break the loop,
+            # else continue to lookup further.
             if best_datadir:
                 break
         else:
-            # Raise StorageFull if image can not be accomodated in
-            # any available datadir.
-            raise exception.StorageFull()
+            msg = (_("There is no enough disk space left on the image "
+                     "storage media. requested=%s") % image_size)
+            LOG.warn(msg)
+            raise exception.StorageFull(message=msg)
 
         return best_datadir
 
