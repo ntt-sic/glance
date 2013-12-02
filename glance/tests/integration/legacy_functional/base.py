@@ -186,7 +186,7 @@ class ApiTest(test_utils.BaseTestCase):
 
     def _setup_stores(self):
         image_dir = os.path.join(self.test_dir, "images")
-        self.config(filesystem_store_datadir=image_dir)
+        self.config(filesystem_store_datadir=[image_dir])
         glance.store.create_stores()
 
     def _load_paste_app(self, name, flavor, conf):
